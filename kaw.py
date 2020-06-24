@@ -133,11 +133,11 @@ class DB:
         try:
             self.dbc.execute(sql)
         except pymysql.err.IntegrityError as err:
-            logging.info("Coult not add block (Integrity Error): " + str(block_id))
+            logging.error("Could not add block (Integrity Error): " + str(block_id))
             return(-1)
         except Exception as err:
-            logging.info(type(err))
-            logging.info(err)
+            logging.critical(type(err))
+            logging.critical(err)
 
         self.dbc.execute('SELECT MAX(block_id) as id FROM blocks')
         id = self.dbc.fetchone()[0]
@@ -186,9 +186,9 @@ class DB:
         self.dbc.execute(sql)
         return(self.dbc.lastrowid)
 
-    def add_msg(self, tx_id, vout, asset_id, ipfs, msg, msg_type):
-        sql = "INSERT INTO msgs(tx_id, vout, asset_id, ipfs, msg, msg_type) VALUES ('%d', '%d', '%d', '%d', '%s', '%d')" % (tx_id, vout, asset_id, ipfs, msg, msg_type)
-        #logging.debug(sql)
+    def add_msg(self, tx_id, vout, asset_id, msg_type, ipfs, msg):
+        sql = "INSERT INTO msgs(tx_id, vout, asset_id, msg_type, ipfs, msg) VALUES ('%d', '%d', '%d', '%d', '%d', '%s')" % (tx_id, vout, asset_id, msg_type, ipfs, msg)
+        logging.info(sql)
         #print(sql)
         self.dbc.execute(sql)
         return(self.dbc.lastrowid)        
@@ -203,7 +203,7 @@ class DB:
 def asset_handler(dbc, tx_id, vout, asset_script):
     asset_name = asset_script.get('asset_name')
 
-    if (asset_name == 'RAVENCOINCASH'):  # Too much processing overhead (abused)
+    if (asset_name == 'RAVENCOINCASH') or (asset_name == 'WWW.RVNASSETSFORSALE.COM'):  # Too much processing overhead (abused)
         return(0)
     
     logging.info("Type: " + asset_script.get('type'))
@@ -223,25 +223,30 @@ def asset_handler(dbc, tx_id, vout, asset_script):
         reissuable = 0
 
     logging.debug("Reissuable: " + str(reissuable))
-    logging.debug("Has IPFS: " + str(asset_script.get('hasIPFS')))
+
+
 
     asset_id = -1
     asset_type = asset_script.get('type')
 
     if (asset_type == 'new_asset') or (asset_type == 'reissue_asset'):
         asset_id = dbc.add_asset(asset_script.get('asset_name'), asset_script.get('amount'), units, reissuable)
-    else:
-        asset_id = dbc.lookup_asset_id(asset_script.get('asset_name'))
+        
 
     logging.debug("asset_id: " + str(asset_id))
 
     msg_type, ipfs, msg = determine_msg_type(asset_script)
-    if (msg_type > 0):
+
+    if (msg_type >= 0):
+        logging.info("Has IPFS: " + str(asset_script.get('hasIPFS')))
+
+    if (msg_type >= 0):
 
         logging.info("Need to store in msg: " + asset_script.get('ipfs_hash'))
 
+        asset_id = dbc.lookup_asset_id(asset_script.get('asset_name'))
         
-        add_msg(dbc, tx_id, vout, asset_id, 1, asset_script.get('ipfs_hash'), msg_type)
+        add_msg(dbc, tx_id, vout, asset_id, msg_type, 1, asset_script.get('ipfs_hash'))
 
         if (pin):
             ipfs_pin_add(asset_script.get('ipfs_hash'))
@@ -251,9 +256,14 @@ def asset_handler(dbc, tx_id, vout, asset_script):
 def determine_msg_type(asset_script):
     ipfs = 1
     msg_type = 0
-    if asset_script.get('hasIPFS') == True or asset_script.get('hasHex') == True:
+    type = asset_script.get('type')
+    if asset_script.get('hasIPFS') == True:
         if asset_script.get('hasIPFS') == True:
-            msg = asset_script.get('ipfs_hash')
+            if (type == 'new_asset'):
+                msg = asset_script.get('ipfs_hash')
+            else:
+                msg = asset_script.get('new_ipfs_hash')
+            logging.info('Msg: ' + msg)
 
 
         return(msg_type, ipfs, msg)
@@ -270,8 +280,8 @@ def determine_msg_type(asset_script):
 # 3 - Memos (RVN) - used with any RVN transaction
 
 # ipfs is 1 for ipfs encoding or 0 for hex encoding
-def add_msg(dbc, tx_id, vout, asset_id, ipfs, msg, msg_type):
-    dbc.add_msg(tx_id, vout, asset_id, ipfs, msg, msg_type)
+def add_msg(dbc, tx_id, vout, asset_id, msg_type, ipfs, msg):
+    dbc.add_msg(tx_id, vout, asset_id, msg_type, ipfs, msg)
 
 
 #Only add vouts that deal with assets, ignore others
@@ -283,16 +293,24 @@ def add_vouts(dbc, block_id, tx_id, vouts):
         asset_id = 0
         sats = 0
         address = ''
+        asset_type = 'unset'
         #get_bci()
-        script = decode_script(vout.get('scriptPubKey').get('hex'))
-        logging.debug("VOUT " + str(vnum) + " script:" + vout.get('scriptPubKey').get('hex'))
-        logging.debug(script)
+        logging.info("Script: " + vout.get('scriptPubKey').get('hex'))
+        try:
+            script = decode_script(vout.get('scriptPubKey').get('hex'))
+            logging.debug("VOUT " + str(vnum) + " script:" + vout.get('scriptPubKey').get('hex'))
+            logging.debug(script)
+            asset_type = script.get('type')
+            logging.info("Script: " + str(script))
 
-        asset_type = script.get('type')
+        except UnicodeDecodeError:  #Handles a rare error in decoding
+            print("Could not decode script in tx - utf-8 error.")
+
+
 
 
         ## This is here just to learn about new asset_types
-        if (asset_type != 'new_asset') and (asset_type != 'reissue_asset') and (asset_type != 'transfer_asset') and (asset_type != 'scripthash') and (asset_type != 'pubkeyhash') and (asset_type != 'nulldata'):
+        if (asset_type != 'new_asset') and (asset_type != 'reissue_asset') and (asset_type != 'transfer_asset') and (asset_type != 'scripthash') and (asset_type != 'pubkeyhash') and (asset_type != 'pubkey') and (asset_type != 'nulldata') and (asset_type != 'nullassetdata') and (asset_type != 'unset') and (asset_type != 'witness_v0_keyhash'):
             logging.critical("New asset type: " + asset_type)
             exit()
         ###################################################        
@@ -328,12 +346,12 @@ def add_txs(dbc, block_id, txs):
 
 
 def main():
-    dbc = DB()
-    logging.info(dbc.get_db_version())
+    db = DB()
+    logging.info(db.get_db_version())
 
     #Get the blockheight of the chain
     blockheight = get_bci().get('blocks')
-    starting_block = max(435456, dbc.get_last_block_id() + 1)
+    starting_block = max(435456, db.get_last_block_id() + 1)
 
     logging.info("Starting block: " + str(starting_block))
 
@@ -343,22 +361,27 @@ def main():
         logging.debug(dta.get('time'))
 
         logging.debug("Adding block to db")
-        id = dbc.add_block(block_id, int(dta.get('time')), dta.get('hash'))
+        id = db.add_block(block_id, int(dta.get('time')), dta.get('hash'))
         if (id > 0):
             logging.debug("Added block as id: " + str(id))
             tx_in_block = get_block(dta.get('hash'))
 
             txs = tx_in_block.get('tx')
 
-            add_txs(dbc, block_id, txs)
+            add_txs(db, block_id, txs)
         else:
             logging.error("Skipping block - already added block #: " + str(block_id))
 
-        dbc.commit()  #Commit to the database after each block is complete
+        db.commit()  #Commit to the database after each block is complete
 
-    close_db()
+    db.close_db()
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     main()
+
+
+def test():
+    db = DB()
+    db.add_msg()    
