@@ -22,6 +22,10 @@ rpc_pass = 'rpcpass555'
 
 pin = False
 
+## CONSTANTS
+MSG_TYPE_METADATA = 0
+MSG_TYPE_ASSET_MEMO = 2
+
 def get_rpc_connection():
     from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
     connection = "http://%s:%s@127.0.0.1:%s"%(rpc_user, rpc_pass, rpc_port)
@@ -154,9 +158,9 @@ class DB:
 
 
 
-    def add_asset(self, asset, amount, units, reissuable):
-        sql = "INSERT INTO assets(asset, amount, units, reissuable) VALUES ('%s', '%f', '%d', '%d')" % (asset, amount, units, reissuable)
-        logging.debug(sql)
+    def add_asset(self, tx_id, vout, asset, amount, units, reissuable):
+        sql = "INSERT INTO assets(tx_id, vout, asset, amount, units, reissuable) VALUES ('%d', '%d', '%s', '%f', '%d', '%d')" % (tx_id, vout, asset, amount, units, reissuable)
+        logging.info(sql)
         self.dbc.execute(sql)
         return(self.dbc.lastrowid)
         
@@ -173,14 +177,24 @@ class DB:
             id = -1 #Not found
         return(id)
 
+    def lookup_tx_hash(self, tx_hash):
+        sql = "SELECT tx_id FROM txs WHERE tx_hash='%s'" % (tx_hash)
+        self.dbc.execute(sql)
+        #try:
+        rslt = self.dbc.fetchone()
+        tx_id = -1 if rslt == None else rslt[0]
+        #except:
+        #    tx_id = -1
+        return(tx_id)
+
 
     def get_id(self, results):
         for row in results:
             id = row[0]
         return(id)        
 
-    def add_vout(self, tx_id, vnum, address, asset_id, sats):
-        sql = "INSERT INTO vouts(tx_id, vnum, address, asset_id, sats) VALUES ('%d', '%d', '%s', '%d', '%d')" % (tx_id, vnum, address, asset_id, sats)
+    def add_vout(self, tx_id, vout, address, asset_id, sats):
+        sql = "INSERT INTO vouts(tx_id, vout, address, asset_id, sats) VALUES ('%d', '%d', '%s', '%d', '%d')" % (tx_id, vout, address, asset_id, sats)
         #logging.debug(sql)
         #print(sql)
         self.dbc.execute(sql)
@@ -191,7 +205,27 @@ class DB:
         logging.info(sql)
         #print(sql)
         self.dbc.execute(sql)
-        return(self.dbc.lastrowid)        
+        return(self.dbc.lastrowid)   
+
+    def remove_msgs(self, tx_id):
+        sql = "DELETE FROM msgs WHERE tx_id=('%d')" % tx_id;
+        self.dbc.execute(sql)
+
+    def remove_assets(self, tx_id):
+        sql = "DELETE FROM assets WHERE tx_id=('%d')" % tx_id;
+        self.dbc.execute(sql)
+
+    def remove_vouts(self, tx_id):
+        sql = "DELETE FROM vouts WHERE tx_id=('%d')" % tx_id;
+        self.dbc.execute(sql)
+
+    def remove_tx(self, tx_id):
+        sql = "DELETE FROM txs WHERE tx_id=('%d')" % tx_id;
+        self.dbc.execute(sql)
+
+    def remove_block(self, block_id):
+        sql = "DELETE FROM blocks WHERE block_id=('%d')" % block_id;
+        self.dbc.execute(sql)        
 
 
         ## END KAW - Specific #################################################
@@ -200,76 +234,62 @@ class DB:
 
 ## END DATABASE ACCESS #############################################
 
-def asset_handler(dbc, tx_id, vout, asset_script):
+def asset_handler(dbc, asset_type, tx_id, vout, asset_script):
     asset_name = asset_script.get('asset_name')
 
     if (asset_name == 'RAVENCOINCASH') or (asset_name == 'WWW.RVNASSETSFORSALE.COM'):  # Too much processing overhead (abused)
         return(0)
     
-    logging.info("Type: " + asset_script.get('type'))
-    logging.info("Asset: " + asset_name)
-    logging.debug(asset_script.get('amount'))
-
-
-    logging.debug(asset_script.get('units'))
-
-    units = 0
-    if asset_script.get('units') != None:
-        units = int(asset_script.get('units'))
-
-    
-    reissuable = 1
-    if asset_script.get('reissuable') == None:
-        reissuable = 0
-
-    logging.debug("Reissuable: " + str(reissuable))
-
+    logging.debug("Type: " + asset_type)
+    logging.debug("Asset: " + asset_name)
 
 
     asset_id = -1
-    asset_type = asset_script.get('type')
+    #asset_type = asset_script.get('type')
 
     if (asset_type == 'new_asset') or (asset_type == 'reissue_asset'):
-        asset_id = dbc.add_asset(asset_script.get('asset_name'), asset_script.get('amount'), units, reissuable)
-        
+        reissuable = 0 if asset_script.get('reissuable') == None else 1
+        logging.debug("Reissuable: " + str(reissuable))
 
-    logging.debug("asset_id: " + str(asset_id))
+        logging.info(asset_script)
+        logging.info(asset_script.get('units'))
+        units = 0 if (asset_script.get('units') == None) else int(asset_script.get('units'))
+        logging.info("Units: " + str(units))
 
-    msg_type, ipfs, msg = determine_msg_type(asset_script)
+        asset_id = dbc.add_asset(tx_id, vout, asset_script.get('asset_name'), asset_script.get('amount'), units, reissuable)
+        if asset_script.get('hasIPFS') == True:
+            asset_id = dbc.lookup_asset_id(asset_script.get('asset_name'))
+            logging.info("Adding meta-data for: " + asset_script.get('asset_name'))
+            add_msg(dbc, tx_id, vout, asset_id, MSG_TYPE_METADATA, asset_script.get('ipfs_hash') if asset_type == 'new_asset' else asset_script.get('new_ipfs_hash'))
 
-    if (msg_type >= 0):
-        logging.info("Has IPFS: " + str(asset_script.get('hasIPFS')))
+    elif (asset_type == 'transfer_asset'):
+        asset_msg = asset_script.get('asset').get('message')
+        if asset_msg != None:
+            asset_id = dbc.lookup_asset_id(asset_name)
+            logging.info("Adding memo for: " + asset_name)
+            add_msg(dbc, tx_id, vout, asset_id, MSG_TYPE_ASSET_MEMO, asset_msg)
 
-    if (msg_type >= 0):
-
-        logging.info("Need to store in msg: " + asset_script.get('ipfs_hash'))
-
-        asset_id = dbc.lookup_asset_id(asset_script.get('asset_name'))
-        
-        add_msg(dbc, tx_id, vout, asset_id, msg_type, 1, asset_script.get('ipfs_hash'))
-
-        if (pin):
-            ipfs_pin_add(asset_script.get('ipfs_hash'))
 
     return(asset_id)
 
-def determine_msg_type(asset_script):
-    ipfs = 1
-    msg_type = 0
-    type = asset_script.get('type')
-    if asset_script.get('hasIPFS') == True:
-        if asset_script.get('hasIPFS') == True:
-            if (type == 'new_asset'):
-                msg = asset_script.get('ipfs_hash')
-            else:
-                msg = asset_script.get('new_ipfs_hash')
-            logging.info('Msg: ' + msg)
+# def determine_msg_type(asset_type, asset_script):
+#     ipfs = 1
+#     msg_type = 0
+
+#     type = asset_script.get('type')
+#     if asset_script.get('hasIPFS') == True:
+#         if asset_script.get('hasIPFS') == True:
+#             if (type == 'new_asset'):
+#                 msg = asset_script.get('ipfs_hash')
+#             else:
+#                 msg = asset_script.get('new_ipfs_hash')
+#             logging.info('Msg: ' + msg)
 
 
-        return(msg_type, ipfs, msg)
+#         return(msg_type, ipfs, msg)
         
-    else:
-        return(-1, -1, '') # No message
+#     else:
+#         return(-1, -1, '') # No message
 
 
 # Add a msg
@@ -280,8 +300,11 @@ def determine_msg_type(asset_script):
 # 3 - Memos (RVN) - used with any RVN transaction
 
 # ipfs is 1 for ipfs encoding or 0 for hex encoding
-def add_msg(dbc, tx_id, vout, asset_id, msg_type, ipfs, msg):
+def add_msg(dbc, tx_id, vout, asset_id, msg_type, msg):
+    ipfs = 1 if msg[0] == 'Q' else 0  #Check for 'Qm....' for ipfs
     dbc.add_msg(tx_id, vout, asset_id, msg_type, ipfs, msg)
+    if pin and ipfs:
+        ipfs_pin_add(msg)
 
 
 #Only add vouts that deal with assets, ignore others
@@ -295,13 +318,15 @@ def add_vouts(dbc, block_id, tx_id, vouts):
         address = ''
         asset_type = 'unset'
         #get_bci()
-        logging.info("Script: " + vout.get('scriptPubKey').get('hex'))
+        #logging.debug("Script: " + vout.get('scriptPubKey').get('hex'))
+        
+
         try:
             script = decode_script(vout.get('scriptPubKey').get('hex'))
-            logging.debug("VOUT " + str(vnum) + " script:" + vout.get('scriptPubKey').get('hex'))
-            logging.debug(script)
+            #logging.debug("VOUT " + str(vnum) + " script:" + vout.get('scriptPubKey').get('hex'))
+            #logging.debug(script)
             asset_type = script.get('type')
-            logging.info("Script: " + str(script))
+            #logging.debug("Script: " + str(script))
 
         except UnicodeDecodeError:  #Handles a rare error in decoding
             print("Could not decode script in tx - utf-8 error.")
@@ -310,25 +335,25 @@ def add_vouts(dbc, block_id, tx_id, vouts):
 
 
         ## This is here just to learn about new asset_types
-        if (asset_type != 'new_asset') and (asset_type != 'reissue_asset') and (asset_type != 'transfer_asset') and (asset_type != 'scripthash') and (asset_type != 'pubkeyhash') and (asset_type != 'pubkey') and (asset_type != 'nulldata') and (asset_type != 'nullassetdata') and (asset_type != 'unset') and (asset_type != 'witness_v0_keyhash'):
-            logging.critical("New asset type: " + asset_type)
-            exit()
+        #if (asset_type != 'new_asset') and (asset_type != 'reissue_asset') and (asset_type != 'transfer_asset') and (asset_type != 'scripthash') and (asset_type != 'pubkeyhash') and (asset_type != 'pubkey') and (asset_type != 'nulldata') and (asset_type != 'nullassetdata') and (asset_type != 'unset') and (asset_type != 'witness_v0_keyhash'):
+        #    logging.critical("New asset type: " + asset_type)
+        #    exit()
         ###################################################        
         
         if (asset_type == 'transfer_asset') or (asset_type == 'new_asset') or (asset_type == 'reissue_asset'):
             logging.debug("ASSET TYPE FOUND")
-            asset_id = asset_handler(dbc, tx_id, vnum, script)
-            asset_amount = script.get('asset').get('amount')
-            logging.debug(script.get('asset'))
-            address =  script.get('addresses')[0]
-            if (address == ''):
-                logging.critical("Address Not Found")            
-            dbc.add_vout(tx_id, vnum, address, asset_id, sats)
+            asset_id = asset_handler(dbc, asset_type, tx_id, vnum, script)
+            #asset_amount = script.get('asset').get('amount')
+            #logging.debug(script.get('asset'))
+            #address =  script.get('addresses')[0]
+            #if (address == ''):
+            #    logging.critical("Address Not Found")            
+            #dbc.add_vout(tx_id, vnum, address, asset_id, sats)
         else:
             # TODO TB20200618 - Need to find memos for RVN transactions after hard-fork of Feb 7, 2020
             #logging.info("Type: " + asset_type)
             if (block_id >= 1092672):
-                logging.info("Should be indexing memos for RVN transactions in add_vouts")
+                logging.debug("Should be indexing memos for RVN transactions in add_vouts")
 
         vnum = vnum + 1
 
@@ -343,7 +368,34 @@ def add_txs(dbc, block_id, txs):
         add_vouts(dbc, block_id, tx_id, tx_detail.get('vout'))
         #logging.info("txdecoded: " + tx_detail.get('vout'))
 
+#Remove tx and associated msgs, assets, vouts
+def reset_tx(db, tx):
+    tx_info = get_rawtx(tx)
+    tx_hash = decode_rawtx(tx_info).get('hash')
+    logging.info('tx_hash: ' + tx_hash)
+    tx_id = db.lookup_tx_hash(tx_hash)
+    logging.info('tx_id is ' + str(tx_id))
+    if (tx_id > 0):
+        db.remove_msgs(tx_id)
+        db.remove_assets(tx_id)
+        db.remove_vouts(tx_id)
+        db.remove_tx(tx_id)
 
+#Loop through txs, remove msgs, assets, vouts
+def reset_txs(db, txs):
+    for tx in txs:
+        reset_tx(db, tx)
+
+
+
+#Loop through all tx, and remove all msgs, assets, vouts
+def reset_block(db, block_id):
+    dta = get_blockinfo(block_id)
+    tx_in_block = get_block(dta.get('hash'))
+    txs = tx_in_block.get('tx')
+    reset_txs(db, txs)
+    db.remove_block(block_id)
+    db.commit()  #Commit to the database after each block is complete
 
 def main():
     db = DB()
@@ -353,7 +405,15 @@ def main():
     blockheight = get_bci().get('blocks')
     starting_block = max(435456, db.get_last_block_id() + 1)
 
-    logging.info("Starting block: " + str(starting_block))
+
+
+    ## FOR DEBUGGING ##############
+    starting_block = 1289173
+    reset_block(db, starting_block)
+    ###############################
+
+    logging.info("Starting block: " + str(starting_block))    
+
 
     for block_id in range(starting_block,blockheight):
         dta = get_blockinfo(block_id)
