@@ -16,6 +16,10 @@ apt install python3
 apt install python3-pip
 ```
 
+Run ravend or raven-qt
+```raven-qt -txindex -addressindex```
+
+
 
 Usage:
 ```python3 kaw.py```

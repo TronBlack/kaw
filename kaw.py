@@ -264,10 +264,19 @@ def asset_handler(dbc, asset_type, tx_id, vout, asset_script):
 
     elif (asset_type == 'transfer_asset'):
         asset_msg = asset_script.get('asset').get('message')
+        logging.info("Found transfer_asset")
+        logging.info("get-asset: " + str(asset_script.get('asset')))
+        logging.info("get-message: " + str(asset_script.get('asset').get('message')))
+        logging.info("asset_msg: " + str(asset_msg))
+        logging.info("asset_name: " + asset_name)
+        if (asset_name == 'CATE'):
+            exit()
+
         if asset_msg != None:
             asset_id = dbc.lookup_asset_id(asset_name)
             logging.info("Adding memo for: " + asset_name)
             add_msg(dbc, tx_id, vout, asset_id, MSG_TYPE_ASSET_MEMO, asset_msg)
+            exit()
 
 
     return(asset_id)
@@ -363,8 +372,9 @@ def add_txs(dbc, block_id, txs):
         tx_info = get_rawtx(tx)
         logging.debug("txinfo: " + tx_info)
         tx_detail = decode_rawtx(tx_info)
-        tx_id = dbc.add_tx(block_id, tx_detail.get('hash'))
-        logging.debug("Added tx: " + str(tx_id))
+        tx_hash = tx_detail.get('hash')
+        tx_id = dbc.add_tx(block_id, tx_hash)
+        logging.info("Added tx_hash: " + tx_hash)
         add_vouts(dbc, block_id, tx_id, tx_detail.get('vout'))
         #logging.info("txdecoded: " + tx_detail.get('vout'))
 
@@ -372,9 +382,9 @@ def add_txs(dbc, block_id, txs):
 def reset_tx(db, tx):
     tx_info = get_rawtx(tx)
     tx_hash = decode_rawtx(tx_info).get('hash')
-    logging.info('tx_hash: ' + tx_hash)
+    logging.info('Removing: tx_hash: ' + tx_hash)
     tx_id = db.lookup_tx_hash(tx_hash)
-    logging.info('tx_id is ' + str(tx_id))
+    logging.info('Removing: tx_id is ' + str(tx_id))
     if (tx_id > 0):
         db.remove_msgs(tx_id)
         db.remove_assets(tx_id)
@@ -408,7 +418,7 @@ def main():
 
 
     ## FOR DEBUGGING ##############
-    starting_block = 1289173
+    starting_block = 1289219
     reset_block(db, starting_block)
     ###############################
 
